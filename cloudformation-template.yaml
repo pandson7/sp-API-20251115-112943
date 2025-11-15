@@ -1,0 +1,395 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Product Specifications API with DynamoDB, Lambda, and API Gateway'
+
+Resources:
+  ProductSpecificationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: ProductSpecifications20251115112943
+      AttributeDefinitions:
+        - AttributeName: product_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: product_id
+          KeyType: HASH
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                  - dynamodb:Query
+                Resource: !GetAtt ProductSpecificationsTable.Arn
+
+  ProductsApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ProductsApi20251115112943
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, ScanCommand, GetCommand } = require('@aws-sdk/lib-dynamodb');
+
+          const client = new DynamoDBClient({});
+          const docClient = DynamoDBDocumentClient.from(client);
+
+          const TABLE_NAME = process.env.TABLE_NAME;
+
+          exports.handler = async (event) => {
+            console.log('Event:', JSON.stringify(event, null, 2));
+            
+            try {
+              const { httpMethod, pathParameters } = event;
+              
+              if (httpMethod === 'GET') {
+                if (pathParameters && pathParameters.id) {
+                  return await getProductById(pathParameters.id);
+                } else {
+                  return await getAllProducts();
+                }
+              }
+              
+              return {
+                statusCode: 405,
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*'
+                },
+                body: JSON.stringify({
+                  success: false,
+                  error: 'Method not allowed'
+                })
+              };
+            } catch (error) {
+              console.error('Error:', error);
+              return {
+                statusCode: 500,
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*'
+                },
+                body: JSON.stringify({
+                  success: false,
+                  error: 'Internal server error'
+                })
+              };
+            }
+          };
+
+          async function getAllProducts() {
+            const command = new ScanCommand({
+              TableName: TABLE_NAME
+            });
+            
+            const result = await docClient.send(command);
+            
+            return {
+              statusCode: 200,
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+              },
+              body: JSON.stringify({
+                success: true,
+                data: result.Items || [],
+                count: result.Items ? result.Items.length : 0
+              })
+            };
+          }
+
+          async function getProductById(productId) {
+            const command = new GetCommand({
+              TableName: TABLE_NAME,
+              Key: {
+                product_id: productId
+              }
+            });
+            
+            const result = await docClient.send(command);
+            
+            if (!result.Item) {
+              return {
+                statusCode: 404,
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Access-Control-Allow-Origin': '*'
+                },
+                body: JSON.stringify({
+                  success: false,
+                  error: 'Product not found',
+                  code: 'PRODUCT_NOT_FOUND'
+                })
+              };
+            }
+            
+            return {
+              statusCode: 200,
+              headers: {
+                'Content-Type': 'application/json',
+                'Access-Control-Allow-Origin': '*'
+              },
+              body: JSON.stringify({
+                success: true,
+                data: result.Item
+              })
+            };
+          }
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ProductSpecificationsTable
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+
+  DataSeederFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: DataSeeder20251115112943
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, PutCommand } = require('@aws-sdk/lib-dynamodb');
+
+          const client = new DynamoDBClient({});
+          const docClient = DynamoDBDocumentClient.from(client);
+
+          const TABLE_NAME = process.env.TABLE_NAME;
+
+          const sampleProducts = [
+            {
+              product_id: 'prod_001',
+              name: 'iPhone 15 Pro',
+              category: 'Electronics',
+              brand: 'Apple',
+              specifications: {
+                price: 999.99,
+                storage: '256GB',
+                color: 'Natural Titanium',
+                display: '6.1-inch Super Retina XDR',
+                camera: '48MP Main camera'
+              },
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            },
+            {
+              product_id: 'prod_002',
+              name: 'MacBook Pro 14-inch',
+              category: 'Electronics',
+              brand: 'Apple',
+              specifications: {
+                price: 1999.99,
+                processor: 'M3 Pro chip',
+                memory: '16GB',
+                storage: '512GB SSD',
+                display: '14.2-inch Liquid Retina XDR'
+              },
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            },
+            {
+              product_id: 'prod_003',
+              name: 'Samsung Galaxy S24 Ultra',
+              category: 'Electronics',
+              brand: 'Samsung',
+              specifications: {
+                price: 1199.99,
+                storage: '256GB',
+                color: 'Titanium Black',
+                display: '6.8-inch Dynamic AMOLED 2X',
+                camera: '200MP Main camera'
+              },
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            },
+            {
+              product_id: 'prod_004',
+              name: 'Nike Air Max 270',
+              category: 'Footwear',
+              brand: 'Nike',
+              specifications: {
+                price: 150.00,
+                size: 'US 10',
+                color: 'Black/White',
+                material: 'Mesh and synthetic leather',
+                type: 'Running shoes'
+              },
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            },
+            {
+              product_id: 'prod_005',
+              name: 'Sony WH-1000XM5',
+              category: 'Electronics',
+              brand: 'Sony',
+              specifications: {
+                price: 399.99,
+                type: 'Wireless Noise Canceling Headphones',
+                color: 'Black',
+                battery_life: '30 hours',
+                connectivity: 'Bluetooth 5.2'
+              },
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            }
+          ];
+
+          exports.handler = async (event) => {
+            console.log('Seeder event:', JSON.stringify(event, null, 2));
+            
+            try {
+              await seedData();
+              return {
+                statusCode: 200,
+                body: JSON.stringify({
+                  success: true,
+                  message: 'Sample data seeded successfully',
+                  count: sampleProducts.length
+                })
+              };
+            } catch (error) {
+              console.error('Error seeding data:', error);
+              throw error;
+            }
+          };
+
+          async function seedData() {
+            console.log(`Seeding ${sampleProducts.length} products to table: ${TABLE_NAME}`);
+            
+            for (const product of sampleProducts) {
+              const command = new PutCommand({
+                TableName: TABLE_NAME,
+                Item: product
+              });
+              
+              await docClient.send(command);
+              console.log(`Seeded product: ${product.product_id}`);
+            }
+            
+            console.log('Data seeding completed successfully');
+          }
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ProductSpecificationsTable
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+
+  ProductsApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: ProductsApi20251115112943
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ProductsApi
+      ParentId: !GetAtt ProductsApi.RootResourceId
+      PathPart: api
+
+  ProductsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ProductsApi
+      ParentId: !Ref ApiResource
+      PathPart: products
+
+  ProductsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ProductsApi
+      ResourceId: !Ref ProductsResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductsApiFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseHeaders:
+            Access-Control-Allow-Origin: true
+
+  ProductResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ProductsApi
+      ParentId: !Ref ProductsResource
+      PathPart: '{id}'
+
+  ProductMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ProductsApi
+      ResourceId: !Ref ProductResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductsApiFunction.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseHeaders:
+            Access-Control-Allow-Origin: true
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ProductsMethod
+      - ProductMethod
+    Properties:
+      RestApiId: !Ref ProductsApi
+      StageName: prod
+
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ProductsApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub '${ProductsApi}/*/*'
+
+Outputs:
+  ApiUrl:
+    Description: 'API Gateway URL'
+    Value: !Sub 'https://${ProductsApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
+  TableName:
+    Description: 'DynamoDB Table Name'
+    Value: !Ref ProductSpecificationsTable
+    Export:
+      Name: !Sub '${AWS::StackName}-TableName'
+
+  SeederFunctionName:
+    Description: 'Data Seeder Function Name'
+    Value: !Ref DataSeederFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-SeederFunctionName'
